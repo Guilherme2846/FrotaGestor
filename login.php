@@ -22,7 +22,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         header("Location: dashboard.php");
         exit;
     } else {
-        $erro = "Email ou senha inválidos.";
+        $erro = "Usuário ou senha inválidos.";
     }
 }
 ?>
@@ -51,13 +51,13 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                     <form method="POST">
                         <div class="mb-3">
-                            <label>Email</label>
-                            <input type="email" name="email" class="form-control" required>
+                            <label for="login">Usuário ou e-mail</label>
+                            <input id="login" type="text" name="email" autocomplete="username" class="form-control" required>
                         </div>
 
                         <div class="mb-3">
-                            <label>Senha</label>
-                            <input type="password" name="senha" class="form-control" required>
+                            <label for="senha">Senha</label>
+                            <input id="senha" type="password" name="senha" autocomplete="current-password" class="form-control" required>
                         </div>
 
                         <button type="submit" class="btn btn-primary w-100">
