@@ -1,0 +1,24 @@
+.combustivel { color: #192e38; margin: 1.8rem auto 4rem; font-family: "Inter", system-ui, sans-serif; }
+.combustivel .topo,.combustivel .cabecalho,.combustivel .acoes,.combustivel .paginacao { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.combustivel h1 { font-size:clamp(1.8rem,4vw,2.6rem); letter-spacing:-.045em; font-weight:700; }
+.combustivel .topo p,.combustivel small,.combustivel h2 span { color:#526771; }
+.combustivel .filtros,.combustivel .historico { padding:1.2rem; background:white; border:1px solid #d8e2e5; border-radius:10px; margin-top:1.2rem; }
+.combustivel .filtros { display:flex; align-items:end; gap:1rem; flex-wrap:wrap; }
+.combustivel label { display:grid; gap:.3rem; font-size:.9rem; }
+.combustivel select,.combustivel input[type=date] { border:1px solid #adbdc3; border-radius:5px; padding:.44rem; min-height:37px; background:#fff; }
+.combustivel .resumo { display:grid; grid-template-columns:repeat(auto-fit,minmax(185px,1fr)); gap:.8rem; margin-top:1rem; }
+.combustivel .resumo section { background:#eef5f4; padding:1.1rem; border-top:3px solid #267361; border-radius:5px; }
+.combustivel .resumo h2 { font-size:.88rem; font-weight:600; margin:0; }
+.combustivel .resumo strong { display:block; margin:.3rem 0; font-size:1.48rem; letter-spacing:-.03em; }
+.combustivel .resumo small { font-size:.8rem; }
+.combustivel .historico h2 { font-size:1.3rem; margin:0; }
+.combustivel a:not(.btn),.combustivel summary { color:#135d62; }
+.combustivel .rolagem { overflow-x:auto; margin-top:.9rem; }
+.combustivel table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:.88rem; }
+.combustivel th,.combustivel td { padding:.7rem .5rem; white-space:nowrap; text-align:right; border-bottom:1px solid #e0e6e7; vertical-align:top; }
+.combustivel th { background:#edf2f3; }
+.combustivel :is(th,td):is(:first-child,:nth-child(2),:last-child) { text-align:left; }
+.combustivel dl { max-width:18em; white-space:normal; margin:.6rem 0 0; }
+.combustivel .paginacao { justify-content:center; margin-top:1rem; }
+@media (max-width:560px) { .combustivel label,.combustivel .filtros button { width:100%; } }
+@media print { .combustivel .no-print { display:none!important; } .combustivel .historico { border:0; padding:0; } .combustivel .rolagem { overflow:visible; } .combustivel tr { break-inside:avoid; } .combustivel .resumo { grid-template-columns:repeat(4,1fr); } }
