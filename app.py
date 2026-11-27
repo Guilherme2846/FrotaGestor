@@ -39,6 +39,12 @@ def iniciar():
         CREATE TABLE IF NOT EXISTS cadastros(
             id INTEGER PRIMARY KEY, tipo TEXT NOT NULL, nome TEXT NOT NULL, chave TEXT NOT NULL,
             detalhe TEXT NOT NULL DEFAULT '', observacao TEXT NOT NULL DEFAULT '', UNIQUE(tipo,chave));""")
+        con.execute('BEGIN IMMEDIATE')
+        existentes = {r['name'] for r in con.execute('PRAGMA table_info(cadastros)')}
+        for campos in EXTRAS.values():
+            for coluna, _ in campos:
+                if coluna not in existentes:
+                    con.execute(f"ALTER TABLE cadastros ADD COLUMN {coluna} TEXT NOT NULL DEFAULT ''")
 
 def esc(v):
     return html.escape(str(v),quote=True)
@@ -118,6 +124,13 @@ def registros(tipo):
     with banco() as con:
         return con.execute('SELECT * FROM cadastros WHERE tipo=? ORDER BY chave',(tipo,)).fetchall()
 
+EXTRAS = {
+    'placa': [('marca','Marca'), ('potencia','Potência (cv)'), ('tracao','Configuração de tração')],
+    'motorista': [('cidade_moradia','Cidade de moradia')],
+    'posto': [('telefone_posto','Telefone do posto')],
+}
+TRACOES = ('4x2','4x4','6x2','6x4','6x6','8x2','8x4','8x6','8x8')
+
 def lista(col):
     nomes = (r['nome'] for r in registros(col)) if col in TIPOS else opcoes(col)
     return ''.join(f'<option value="{esc(v)}"></option>' for v in nomes)
@@ -126,15 +139,22 @@ def salvar_cadastro(tipo, f):
     nome = placa(f['nome']) if tipo=='placa' else ' '.join(f['nome'].split())
     if not nome:
         raise ValueError('Informe '+TIPOS[tipo][1].lower()+'.')
-    dados = (nome,nome.casefold(),f.get('detalhe','').strip(),f.get('observacao','').strip())
+    dados = dict(nome=nome,chave=nome.casefold(),detalhe=f.get('detalhe','').strip(),observacao=f.get('observacao','').strip())
+    for coluna, _ in EXTRAS[tipo]:
+        if coluna in f:
+            dados[coluna] = f[coluna].strip()
+    if dados.get('potencia') and not re.fullmatch(r'[1-9][0-9]{0,4}',dados['potencia']):
+        raise ValueError('Informe a potência em cv como número inteiro positivo.')
     with banco() as con:
         try:
             if f.get('id'):
-                cur=con.execute('UPDATE cadastros SET nome=?,chave=?,detalhe=?,observacao=? WHERE tipo=? AND id=?',
-                                (*dados,tipo,f['id']))
+                atribuicoes = ','.join(k+'=?' for k in dados)
+                cur=con.execute(f'UPDATE cadastros SET {atribuicoes} WHERE tipo=? AND id=?',
+                                (*dados.values(),tipo,f['id']))
                 if not cur.rowcount: raise ValueError('Cadastro não encontrado.')
             else:
-                con.execute('INSERT INTO cadastros(nome,chave,detalhe,observacao,tipo) VALUES(?,?,?,?,?)',(*dados,tipo))
+                dados['tipo']=tipo
+                con.execute(f"INSERT INTO cadastros({','.join(dados)}) VALUES({','.join('?' for _ in dados)})",tuple(dados.values()))
         except sqlite3.IntegrityError:
             raise ValueError('Já existe um cadastro com essa identificação.')
 
@@ -149,15 +169,20 @@ def tela_cadastros(tipo, f, erro=''):
     bloco+=f'<form class="nota" action="{url}" method="post"><h3>{"Editar cadastro" if f.get("id") else "Novo cadastro"}</h3>'
     if erro: bloco+=f'<p role="alert">{esc(erro)}</p>'
     bloco+=f'<input type="hidden" name="token" value="{TOKEN}"><input type="hidden" name="id" value="{esc(f.get("id",""))}"><div class="grade">'
-    for k,label in [('nome',ident),('detalhe',detalhe),('observacao','Observação')]:
-        bloco+=f'<label>{label}<input name="{k}" value="{esc(f.get(k,""))}" {"required" if k=="nome" else ""}></label>'
+    campos=[('nome',ident),('detalhe',detalhe),*EXTRAS[tipo],('observacao','Observação')]
+    atributos={'nome':'required','potencia':'type="number" min="1" max="99999" step="1"',
+               'tracao':'list="tracoes" placeholder="Ex.: 6x2"','telefone_posto':'type="tel"'}
+    for k,label in campos:
+        bloco+=f'<label>{label}<input name="{k}" value="{esc(f.get(k,""))}" {atributos.get(k,"")}></label>'
+    if tipo=='placa':
+        bloco+='<datalist id="tracoes">'+''.join(f'<option value="{v}"></option>' for v in TRACOES)+'</datalist>'
     bloco+='</div><button>Salvar cadastro</button>'
     if f.get('id'): bloco+=f' <a href="{url}">Cancelar edição</a>'
     bloco+='</form><h3>Registros ('+str(len(rows))+')</h3>'
     if rows:
-        bloco+=f'<div class="tabela"><table><tr><th>{ident}</th><th>{detalhe}</th><th>Observação</th><th></th></tr>'
+        bloco+='<div class="tabela"><table><tr>'+''.join(f'<th>{label}</th>' for _,label in campos)+'<th></th></tr>'
         for r in rows:
-            bloco+='<tr>'+''.join('<td>'+esc(r[k] or '—')+'</td>' for k in ('nome','detalhe','observacao'))+f'<td><a href="{url}?id={r["id"]}">Editar</a></td></tr>'
+            bloco+='<tr>'+''.join('<td>'+esc(r[k] or '—')+'</td>' for k,_ in campos)+f'<td><a href="{url}?id={r["id"]}">Editar</a></td></tr>'
         bloco+='</table></div>'
     else: bloco+='<article>Nenhum cadastro ainda.</article>'
     return pagina(titulo,bloco)
