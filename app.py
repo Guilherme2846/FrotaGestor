@@ -139,7 +139,7 @@ def lista(col):
             veiculos = con.execute("""SELECT v.nome, COALESCE(m.nome,'') AS habitual
                 FROM cadastros v LEFT JOIN cadastros m ON m.id=v.motorista_id AND m.tipo='motorista'
                 WHERE v.tipo='placa' ORDER BY v.chave""")
-            return ''.join(f'<option value="{esc(r["nome"])}" data-motorista="{esc(r["habitual"])}"></option>' for r in veiculos)
+            return ''.join(f'<option value="{esc(r["nome"][:3])}-{esc(r["nome"][3:])}" data-motorista="{esc(r["habitual"])}"></option>' for r in veiculos)
     nomes = (r['nome'] for r in registros(col)) if col in TIPOS else opcoes(col)
     return ''.join(f'<option value="{esc(v)}"></option>' for v in nomes)
 
@@ -186,6 +186,8 @@ def tela_cadastros(tipo, f, erro=''):
     atributos={'nome':'required','potencia':'type="number" min="1" max="99999" step="1"',
                'tracao':'list="tracoes" placeholder="Ex.: 6x2"','telefone_posto':'type="tel"'}
     for k,label in campos:
+        if tipo == 'placa' and k == 'nome':
+            atributos[k] = 'required data-placa placeholder="ABC-1234"'
         bloco+=f'<label>{label}<input name="{k}" value="{esc(f.get(k,""))}" {atributos.get(k,"")}></label>'
     if tipo=='placa':
         bloco+='<datalist id="tracoes">'+''.join(f'<option value="{v}"></option>' for v in TRACOES)+'</datalist>'
@@ -208,7 +210,31 @@ def tela_cadastros(tipo, f, erro=''):
         bloco+='</table></div>'
     else: bloco+='<article>Nenhum cadastro ainda.</article>'
     return pagina(titulo,bloco)
+MASCARA_PLACA = """<script>
+for (const campo of document.querySelectorAll('input[data-placa]')) {
+    function formatar() {
+        const original = campo.value;
+        const letrasNumeros = texto => texto.replace(/[^a-z0-9]/gi, '').toUpperCase();
+        const codigo = letrasNumeros(original).slice(0, 7);
+        const formatada = codigo.length > 3 ? codigo.slice(0, 3) + '-' + codigo.slice(3) : codigo;
+        if (original === formatada) return;
+        const antes = letrasNumeros(original.slice(0, campo.selectionStart)).length;
+        campo.value = formatada;
+        const cursor = Math.min(formatada.length, antes + (antes > 3 ? 1 : 0));
+        campo.setSelectionRange(cursor, cursor);
+    }
+    campo.addEventListener('beforeinput', evento => {
+        if (evento.inputType === 'deleteContentForward' && campo.selectionStart === 3 &&
+            campo.selectionEnd === 3 && campo.value[3] === '-') campo.setSelectionRange(4, 4);
+    });
+    campo.addEventListener('input', formatar);
+    formatar();
+}
+</script>"""
+
 def pagina(titulo,body):
+    if 'data-placa' in body:
+        body += MASCARA_PLACA
     return f'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{titulo} · FrotaGestor</title><link rel="stylesheet" href="/estilo.css"><header><div><a href="/"><b>FrotaGestor</b></a><nav class="menu"><a href="/">Abastecimentos</a><a href="/cadastros">Cadastros</a></nav></div></header><main>{body}</main></html>'''
 def formulario(f=None,erro=''):
     f={} if f is None else f
@@ -220,7 +246,7 @@ def formulario(f=None,erro=''):
     return pagina('Novo abastecimento',f'''<a href="/">← Voltar ao relatório</a><h1>Novo abastecimento</h1>
     <form method="post" action="/salvar" class="nota"><input type="hidden" name="token" value="{TOKEN}"><input type="hidden" name="chave" value="{esc(f.get('chave',secrets.token_hex(16)))}">
     {('<p role="alert">'+esc(erro)+'</p>') if erro else ''}<h2>Veículo e nota</h2><div class="grade">'''
-    +campo('data','Data','type=date required')+campo('placa','Placa','list=placas required maxlength=8')+campo('km','Hodômetro (km)','required inputmode=decimal')
+    +campo('data','Data','type=date required')+campo('placa','Placa','list=placas required data-placa placeholder="ABC-1234"')+campo('km','Hodômetro (km)','required inputmode=decimal')
     +campo('modelo','Modelo','list=modelos')+campo('motorista','Motorista','list=motoristas')+campo('posto','Posto','list=postos')+'</div>'
     +''.join(f'<datalist id="{k}s">{lista(k)}</datalist>' for k in ['placa','modelo','motorista','posto'])
     +f'<input type="hidden" name="motorista_manual" value="{int(f.get("motorista_manual")=="1")}">'
@@ -228,7 +254,7 @@ def formulario(f=None,erro=''):
     const formNota = document.querySelector('form.nota');
     const placaNota = formNota.elements.placa;
     const motoristaNota = formNota.elements.motorista;
-    const habituais = new Map(Array.from(placaNota.list.options, o => [o.value, o.dataset.motorista]));
+    const habituais = new Map(Array.from(placaNota.list.options, o => [o.value.replace('-', ''), o.dataset.motorista]));
     const manual = formNota.elements.motorista_manual;
     motoristaNota.addEventListener('input', () => { manual.value = '1'; });
     placaNota.addEventListener('input', () => {
