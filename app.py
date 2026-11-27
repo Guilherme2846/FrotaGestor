@@ -41,6 +41,8 @@ def iniciar():
             detalhe TEXT NOT NULL DEFAULT '', observacao TEXT NOT NULL DEFAULT '', UNIQUE(tipo,chave));""")
         con.execute('BEGIN IMMEDIATE')
         existentes = {r['name'] for r in con.execute('PRAGMA table_info(cadastros)')}
+        if 'motorista_id' not in existentes:
+            con.execute('ALTER TABLE cadastros ADD COLUMN motorista_id INTEGER REFERENCES cadastros(id)')
         for campos in EXTRAS.values():
             for coluna, _ in campos:
                 if coluna not in existentes:
@@ -132,6 +134,12 @@ EXTRAS = {
 TRACOES = ('4x2','4x4','6x2','6x4','6x6','8x2','8x4','8x6','8x8')
 
 def lista(col):
+    if col == 'placa':
+        with banco() as con:
+            veiculos = con.execute("""SELECT v.nome, COALESCE(m.nome,'') AS habitual
+                FROM cadastros v LEFT JOIN cadastros m ON m.id=v.motorista_id AND m.tipo='motorista'
+                WHERE v.tipo='placa' ORDER BY v.chave""")
+            return ''.join(f'<option value="{esc(r["nome"])}" data-motorista="{esc(r["habitual"])}"></option>' for r in veiculos)
     nomes = (r['nome'] for r in registros(col)) if col in TIPOS else opcoes(col)
     return ''.join(f'<option value="{esc(v)}"></option>' for v in nomes)
 
@@ -147,6 +155,11 @@ def salvar_cadastro(tipo, f):
         raise ValueError('Informe a potência em cv como número inteiro positivo.')
     with banco() as con:
         try:
+            if tipo == 'placa' and 'motorista_id' in f:
+                motorista_id = f['motorista_id'] or None
+                if motorista_id and not con.execute("SELECT 1 FROM cadastros WHERE tipo='motorista' AND id=?", (motorista_id,)).fetchone():
+                    raise ValueError('Selecione um motorista cadastrado.')
+                dados['motorista_id'] = motorista_id
             if f.get('id'):
                 atribuicoes = ','.join(k+'=?' for k in dados)
                 cur=con.execute(f'UPDATE cadastros SET {atribuicoes} WHERE tipo=? AND id=?',
@@ -176,10 +189,19 @@ def tela_cadastros(tipo, f, erro=''):
         bloco+=f'<label>{label}<input name="{k}" value="{esc(f.get(k,""))}" {atributos.get(k,"")}></label>'
     if tipo=='placa':
         bloco+='<datalist id="tracoes">'+''.join(f'<option value="{v}"></option>' for v in TRACOES)+'</datalist>'
+        motoristas = {r['id']:r['nome'] for r in registros('motorista')}
+        bloco+='<label>Motorista habitual<select name="motorista_id"><option value="">Sem motorista habitual</option>'
+        for codigo,nome in motoristas.items():
+            selecionado = ' selected' if str(codigo)==str(f.get('motorista_id')) else ''
+            bloco+=f'<option value="{codigo}"{selecionado}>{esc(nome)}</option>'
+        bloco+='</select></label>'
     bloco+='</div><button>Salvar cadastro</button>'
     if f.get('id'): bloco+=f' <a href="{url}">Cancelar edição</a>'
     bloco+='</form><h3>Registros ('+str(len(rows))+')</h3>'
     if rows:
+        if tipo == 'placa':
+            campos.append(('habitual','Motorista habitual'))
+            rows=[dict(r,habitual=motoristas.get(r['motorista_id'],'')) for r in rows]
         bloco+='<div class="tabela"><table><tr>'+''.join(f'<th>{label}</th>' for _,label in campos)+'<th></th></tr>'
         for r in rows:
             bloco+='<tr>'+''.join('<td>'+esc(r[k] or '—')+'</td>' for k,_ in campos)+f'<td><a href="{url}?id={r["id"]}">Editar</a></td></tr>'
@@ -201,6 +223,21 @@ def formulario(f=None,erro=''):
     +campo('data','Data','type=date required')+campo('placa','Placa','list=placas required maxlength=8')+campo('km','Hodômetro (km)','required inputmode=decimal')
     +campo('modelo','Modelo','list=modelos')+campo('motorista','Motorista','list=motoristas')+campo('posto','Posto','list=postos')+'</div>'
     +''.join(f'<datalist id="{k}s">{lista(k)}</datalist>' for k in ['placa','modelo','motorista','posto'])
+    +f'<input type="hidden" name="motorista_manual" value="{int(f.get("motorista_manual")=="1")}">'
+    +r'''<script>
+    const formNota = document.querySelector('form.nota');
+    const placaNota = formNota.elements.placa;
+    const motoristaNota = formNota.elements.motorista;
+    const habituais = new Map(Array.from(placaNota.list.options, o => [o.value, o.dataset.motorista]));
+    const manual = formNota.elements.motorista_manual;
+    motoristaNota.addEventListener('input', () => { manual.value = '1'; });
+    placaNota.addEventListener('input', () => {
+        if (manual.value !== '1') {
+            const chave = placaNota.value.toUpperCase().replace(/[-\s]/g, '');
+            motoristaNota.value = habituais.get(chave) || '';
+        }
+    });
+    </script>'''
     +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+'</div><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+'</textarea></label><button>Salvar abastecimento</button></form>')
 
 COLUNAS=['Data','Placa','Modelo','Motorista','Posto','Hodômetro (km)','Distância (km)','Diesel (L)','Diesel (R$)','Diesel (R$/L)','Média (km/L)','ARLA (L)','ARLA (R$)','Observação']
