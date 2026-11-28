@@ -326,6 +326,66 @@ def relatorio(f,rows):
         valores=linha(r)
         view+='<tr>'+''.join('<td>'+esc(valores[i] or '—')+'</td>' for i in idx)+'<td><details><summary>Ver nota</summary>'+''.join(f'<p>{COLUNAS[i]}: {esc(valores[i] or "—")}</p>' for i in [2,4,9,11,13])+f'</details><a href="/editar/{r["id"]}">Editar</a></td></tr>'
     return pagina('Abastecimentos',view+'</tbody></table></div><p class="rodape">A média usa a distância entre dois tanques completos e todo o diesel abastecido nesse intervalo. O período considera a data em que o tanque foi completado. O resumo usa a distância total dividida pelos litros dos intervalos válidos.</p>')
+INDICADORES = {'consumo': ('Consumo médio', 'km/L', 3),
+               'preco': ('Preço médio do diesel', 'R$/L', 2),
+               'gasto': ('Gasto com diesel e ARLA', 'R$', 2)}
+
+def preco_diesel(notas):
+    litros = sum(r['diesel'] for r in notas)
+    return sum(r['valor'] for r in notas)*10/litros if litros else None
+
+def grafico_periodo(rows, inicio, fim, indicador):
+    titulo, unidade, casas = INDICADORES[indicador]
+    mensal = (fim-inicio).days > 62
+    grupos = {}
+    for r in rows:
+        chave = r['data'][:7] if mensal else r['data']
+        grupos.setdefault(chave, []).append(r)
+    pontos = []
+    for chave, notas in sorted(grupos.items()):
+        dia = date.fromisoformat(chave+'-01' if mensal else chave)
+        if indicador == 'consumo':
+            valor = media_diesel(notas)
+        elif indicador == 'preco':
+            valor = preco_diesel(notas)
+        else:
+            valor = sum(r['valor']+r['valorarla'] for r in notas)/100
+        if valor is not None:
+            pontos.append((dia, valor))
+    if not pontos:
+        return f'<article><h2>{titulo}</h2><p>Sem dados suficientes para este indicador no período.</p></article>'
+    def posicao(d):
+        return d.year*12+d.month if mensal else d.toordinal()
+    primeiro, ultimo = posicao(inicio), posicao(fim)
+    teto = max(v for _,v in pontos) or 1
+    partes = [f'<article><h2>{titulo} ({unidade})</h2><p>Valores por {"mês" if mensal else "dia"} com referência disponível.</p>',
+              f'<svg viewBox="0 0 800 220" style="width:100%;height:auto" role="img" aria-label="{titulo} por período">']
+    for fracao in (0, 0.5, 1):
+        y = 173 - fracao*143
+        partes.append(f'<path d="M 96 {y} H 770" stroke="#d6dfdc"/><text x="88" y="{y+5}" text-anchor="end" fill="#314c48" font-size="13">{fmt(teto*fracao,casas)}</text>')
+    coordenadas = []
+    marcas = []
+    tabela = []
+    largura = min(32, 550/max(1,ultimo-primeiro+1))
+    for dia, valor in pontos:
+        x = 433 if primeiro==ultimo else 102 + 660*(posicao(dia)-primeiro)/(ultimo-primeiro)
+        y = 173-143*valor/teto
+        data_txt = dia.strftime('%m/%Y' if mensal else '%d/%m/%Y')
+        descricao = f'<title>{data_txt} · {fmt(valor,casas)} {unidade}</title>'
+        if indicador == 'gasto':
+            marcas.append(f'<rect x="{x-largura/2:.2f}" y="{y:.2f}" width="{largura:.2f}" height="{173-y:.2f}" fill="#19786a">{descricao}</rect>')
+        else:
+            coordenadas.append(f'{x:.2f},{y:.2f}')
+            marcas.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" fill="#075c50">{descricao}</circle>')
+        tabela.append(f'<tr><td>{data_txt}</td><td>{fmt(valor,casas)}</td></tr>')
+    if coordenadas:
+        partes.append(f'<polyline points="{" ".join(coordenadas)}" fill="none" stroke="#218778" stroke-width="3"/>')
+    partes.extend(marcas)
+    formato = '%m/%Y' if mensal else '%d/%m/%Y'
+    partes.append(f'<text x="96" y="204">{inicio.strftime(formato)}</text><text x="770" y="204" text-anchor="end">{fim.strftime(formato)}</text></svg>')
+    partes.append(f'<details><summary>Ver valores do gráfico</summary><table><thead><tr><th>Data</th><th>{titulo} ({unidade})</th></tr></thead><tbody>')
+    return ''.join(partes+tabela)+ '</tbody></table></details></article>'
+
 def painel_mensal(f, mes):
     from calendar import monthrange
     if not re.fullmatch(r'[0-9]{4}-[0-9]{2}', mes):
@@ -333,42 +393,48 @@ def painel_mensal(f, mes):
     inicio = date.fromisoformat(mes + '-01')
     ultimo = monthrange(inicio.year, inicio.month)[1]
     filtros = {k: f[k] for k in ('placa', 'modelo') if f.get(k)}
-    filtros.update(de=inicio.isoformat(), ate=inicio.replace(day=ultimo).isoformat())
+    fim = date.fromisoformat(f.get('ate') or inicio.replace(day=ultimo).isoformat())
+    inicio = date.fromisoformat(f.get('de') or inicio.isoformat())
+    filtros.update(de=inicio.isoformat(), ate=fim.isoformat())
     rows = consultar(filtros)
-    html = [f'<div class="top"><h1>Relatório mensal</h1><nav><button onclick="window.print()">Imprimir</button></nav></div>'
-            f'<form class="filtros"><label>Mês<input type="month" name="mes" value="{mes}" required></label>']
+    indicador = f.get('indicador', 'consumo')
+    if indicador not in INDICADORES:
+        indicador = 'consumo'
+    html = ['<div class="top"><h1>Relatório de abastecimentos</h1><nav><button onclick="window.print()">Imprimir</button></nav></div>',
+            f'<form class="filtros"><label>De<input type="date" name="de" value="{inicio}" required></label>'
+            f'<label>Até<input type="date" name="ate" value="{fim}" required></label>']
     for k in ('placa', 'modelo'):
         html.append(f'<label>{k.capitalize()}<select name="{k}"><option value="">Todos</option>')
         for v in opcoes(k):
             selected = ' selected' if filtros.get(k) == v else ''
             html.append(f'<option{selected}>{esc(v)}</option>')
         html.append('</select></label>')
-    html.append('<button>Consultar</button></form>')
+    html.append('<label>Indicador do gráfico<select name="indicador">')
+    for chave, (nome, unidade, _) in INDICADORES.items():
+        selected = ' selected' if indicador==chave else ''
+        html.append(f'<option value="{chave}"{selected}>{nome} ({unidade})</option>')
+    html.append('</select></label><button>Consultar</button><a href="/relatorios">Mês atual</a></form>')
     if not rows:
-        html.append('<article>Nenhum abastecimento neste mês para os filtros selecionados.</article>')
-        return pagina('Relatório mensal', ''.join(html))
+        html.append('<article>Nenhum abastecimento neste período para os filtros selecionados.</article>')
+        return pagina('Relatório de abastecimentos', ''.join(html))
 
     diesel = sum(r['valor'] for r in rows)
     arla = sum(r['valorarla'] for r in rows)
     media = media_diesel(rows)
     por_placa = {}
-    gastos = [0] * ((ultimo + 6) // 7)
     for r in rows:
         por_placa.setdefault(r['placa'], []).append(r)
-        gastos[(int(r['data'][-2:]) - 1) // 7] += r['valor'] + r['valorarla']
-    cards = [('Gasto total', 'R$ '+fmt((diesel+arla)/100)),
+    preco = preco_diesel(rows)
+    cards = [('Preço médio do diesel', fmt(preco)+' R$/L' if preco is not None else 'Sem diesel'), ('Gasto total', 'R$ '+fmt((diesel+arla)/100)),
              ('Diesel', 'R$ '+fmt(diesel/100)), ('ARLA', 'R$ '+fmt(arla/100)),
              ('Média da frota filtrada', fmt(media,3)+' km/L' if media else 'Sem referência')]
     html.append('<div class="cards">')
     for titulo, valor in cards:
         html.append(f'<section><small>{titulo}</small><strong>{valor}</strong></section>')
-    html.append('</div><article><h2>Gastos ao longo do mês</h2>')
-    for i, gasto in enumerate(gastos):
-        html.append(f'<p>Dias {7*i+1:02}–{min(7*i+7,ultimo):02} · R$ {fmt(gasto/100)}<br>'
-                    f'<meter aria-label="Gasto relativo ao maior período" style="width:100%;height:1rem" '
-                    f'min="0" max="{max(max(gastos),1)}" value="{gasto}"></meter></p>')
-    html.append('</article><h2>Consumo por placa</h2>'
-                '<p>A média considera os intervalos encerrados neste mês entre dois tanques completos, incluindo os litros dos parciais. Clique na placa para conferir as notas.</p>')
+    html.append('</div>')
+    html.append(grafico_periodo(rows, inicio, fim, indicador))
+    html.append('<h2>Consumo por placa</h2>'
+                '<p>A média considera os intervalos encerrados no período entre dois tanques completos, incluindo os litros dos parciais. Clique na placa para conferir as notas.</p>')
     grupos = [(placa, notas, media_diesel(notas)) for placa, notas in por_placa.items()]
     grupos.sort(key=lambda item: (-(item[2] or 0), item[0]))
     maior = max((m or 0 for _, _, m in grupos), default=0)
@@ -386,7 +452,7 @@ def painel_mensal(f, mes):
                     f'<td>{fmt(sum(r["arla"] for r in notas)/1000,3)}</td>'
                     f'<td>R$ {fmt(sum(r["valor"]+r["valorarla"] for r in notas)/100)}</td><td>{len(notas)}</td></tr>')
     html.append(f'</tbody></table></div><p><a href="/csv?{esc(urlencode(filtros))}">Baixar notas do período (CSV)</a></p>')
-    return pagina('Relatório mensal', ''.join(html))
+    return pagina('Relatório de abastecimentos', ''.join(html))
 
 class Handler(BaseHTTPRequestHandler):
     def enviar(self,body,tipo='text/html; charset=utf-8',status=200):
@@ -406,9 +472,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.enviar(tela_cadastros(tipo if tipo in TIPOS else 'placa',{'id':parse_qs(u.query).get('id',[''])[0]}))
         f={k:v[-1] for k,v in parse_qs(u.query).items() if k in ('placa','modelo','de','ate')}
         if u.path=='/relatorios':
+            f['indicador'] = parse_qs(u.query).get('indicador', ['consumo'])[-1]
             mes = parse_qs(u.query).get('mes', [date.today().isoformat()[:7]])[-1]
             try: return self.enviar(painel_mensal(f, mes))
-            except ValueError: return self.enviar(pagina('Relatório mensal','<p>Mês inválido. <a href="/relatorios">Abrir mês atual</a></p>'),status=422)
+            except ValueError: return self.enviar(pagina('Relatório de abastecimentos','<p>Confira as datas e a ordem do período. <a href="/relatorios">Abrir mês atual</a></p>'),status=422)
         editar = re.fullmatch(r'/editar/([1-9][0-9]{0,17})', u.path)
         if editar:
             with banco() as con:
