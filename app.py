@@ -40,6 +40,8 @@ def iniciar():
             id INTEGER PRIMARY KEY, tipo TEXT NOT NULL, nome TEXT NOT NULL, chave TEXT NOT NULL,
             detalhe TEXT NOT NULL DEFAULT '', observacao TEXT NOT NULL DEFAULT '', UNIQUE(tipo,chave));""")
         con.execute('BEGIN IMMEDIATE')
+        if 'parcial' not in {r['name'] for r in con.execute('PRAGMA table_info(notas)')}:
+            con.execute('ALTER TABLE notas ADD COLUMN parcial INTEGER NOT NULL DEFAULT 0')
         existentes = {r['name'] for r in con.execute('PRAGMA table_info(cadastros)')}
         if 'motorista_id' not in existentes:
             con.execute('ALTER TABLE cadastros ADD COLUMN motorista_id INTEGER REFERENCES cadastros(id)')
@@ -97,9 +99,9 @@ def gravar(f):
                 con.execute('INSERT INTO cadastros(tipo,nome,chave,detalhe) VALUES (?,?,?,?)',
                             (tipo,nome,nome.casefold(),modelo if tipo=='placa' else ''))
             valores[tipo] = nome
-        con.execute("""INSERT INTO notas(data,placa,modelo,motorista,posto,km,diesel,valor,arla,valorarla,observacao,chave)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chave) DO NOTHING""",
-        (d,p,modelo,valores['motorista'],valores['posto'],km,diesel,valor,arla,va,f['observacao'].strip(),f['chave']))
+        con.execute("""INSERT INTO notas(data,placa,modelo,motorista,posto,km,diesel,valor,arla,valorarla,observacao,chave,parcial)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chave) DO NOTHING""",
+        (d,p,modelo,valores['motorista'],valores['posto'],km,diesel,valor,arla,va,f['observacao'].strip(),f['chave'],int(bool(diesel and f.get('parcial')))))
 
 def consultar(f):
     where=[]; args=[]
@@ -111,9 +113,15 @@ def consultar(f):
             where.append('data '+op+' ?'); args.append(date.fromisoformat(f[key]).isoformat())
     if f.get('de') and f.get('ate') and f['de']>f['ate']: raise ValueError('Confira a ordem das datas.')
     with banco() as con:
-        return con.execute("""WITH leituras AS (
-          SELECT id, km-LAG(km) OVER(PARTITION BY placa ORDER BY data,km,id) AS delta FROM notas WHERE diesel>0
-        ) SELECT notas.*, CASE WHEN delta>0 THEN delta END AS distancia FROM notas LEFT JOIN leituras USING(id) """
+        return con.execute("""WITH acumulados AS (
+          SELECT id, placa, data, km, parcial, SUM(diesel) OVER (
+            PARTITION BY placa ORDER BY data,km,id ROWS UNBOUNDED PRECEDING
+          ) AS total FROM notas WHERE diesel>0
+        ), leituras AS (
+          SELECT id, km-LAG(km) OVER ordem AS delta, total-LAG(total) OVER ordem AS litros_intervalo
+          FROM acumulados WHERE parcial=0 WINDOW ordem AS (PARTITION BY placa ORDER BY data,km,id)
+        ) SELECT notas.*, CASE WHEN delta>0 THEN delta END AS distancia, litros_intervalo
+          FROM notas LEFT JOIN leituras USING(id) """
         + (' WHERE '+' AND '.join(where) if where else '')+' ORDER BY data DESC,km DESC,id DESC',args).fetchall()
 
 def opcoes(col):
@@ -264,17 +272,17 @@ def formulario(f=None,erro=''):
         }
     });
     </script>'''
-    +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+'</div><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+'</textarea></label><button>Salvar abastecimento</button></form>')
+    +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+f'</div><label class="marcar"><input type="checkbox" name="parcial" {"checked" if f.get("parcial") else ""}>Tanque de diesel parcial (não completei)</label><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+'</textarea></label><button>Salvar abastecimento</button></form>')
 
-COLUNAS=['Data','Placa','Modelo','Motorista','Posto','Hodômetro (km)','Distância (km)','Diesel (L)','Diesel (R$)','Diesel (R$/L)','Média (km/L)','ARLA (L)','ARLA (R$)','Observação']
+COLUNAS=['Data','Placa','Modelo','Motorista','Posto','Hodômetro (km)','Distância (km)','Diesel (L)','Diesel (R$)','Diesel (R$/L)','Média (km/L)','ARLA (L)','ARLA (R$)','Observação','Tanque de diesel']
 def linha(r):
     km=r['distancia']
-    return [date.fromisoformat(r['data']).strftime('%d/%m/%Y'),r['placa'],r['modelo'],r['motorista'],r['posto'],fmt(r['km']/100),fmt(km/100 if km else None),fmt(r['diesel']/1000,3),fmt(r['valor']/100),fmt(r['valor']*10/r['diesel'] if r['diesel'] else None,3),fmt(km*10/r['diesel'] if km else None,3),fmt(r['arla']/1000,3),fmt(r['valorarla']/100),r['observacao']]
+    return [date.fromisoformat(r['data']).strftime('%d/%m/%Y'),r['placa'],r['modelo'],r['motorista'],r['posto'],fmt(r['km']/100),fmt(km/100 if km else None),fmt(r['diesel']/1000,3),fmt(r['valor']/100),fmt(r['valor']*10/r['diesel'] if r['diesel'] else None,3),fmt(km*10/r['litros_intervalo'] if km else None,3),fmt(r['arla']/1000,3),fmt(r['valorarla']/100),r['observacao'],('Parcial' if r['parcial'] else 'Completo') if r['diesel'] else '-']
 def relatorio(f,rows):
     def select(k,t):
         return '<label>'+t+'<select name="'+k+'"><option value="">Todos</option>'+''.join(f'<option {"selected" if f.get(k)==v else ""}>{esc(v)}</option>' for v in opcoes(k))+'</select></label>'
     validos=[r for r in rows if r['distancia']]
-    litros=sum(r['diesel'] for r in validos)
+    litros=sum(r['litros_intervalo'] for r in validos)
     media=sum(r['distancia'] for r in validos)*10/litros if litros else None
     itens=[('Gasto no período','R$ '+fmt(sum(r['valor']+r['valorarla'] for r in rows)/100)),('Diesel abastecido',fmt(sum(r['diesel'] for r in rows)/1000,3)+' L'),('Média de diesel',fmt(media,3)+' km/L' if media else 'Sem referência'),('ARLA abastecido',fmt(sum(r['arla'] for r in rows)/1000,3)+' L')]
     view='<div class="top"><h1>Abastecimentos</h1><a class="botao" href="/novo">+ Novo abastecimento</a></div><form class="filtros">'+select('placa','Placa')+select('modelo','Modelo')
@@ -282,12 +290,12 @@ def relatorio(f,rows):
     view+='<button>Consultar</button><a href="/">Limpar</a></form><div class="cards">'+''.join(f'<section><small>{t}</small><strong>{v}</strong></section>' for t,v in itens)+'</div>'
     view+=f'<div class="top"><h2>Histórico <small>({len(rows)})</small></h2><nav><a href="/csv?{esc(urlencode(f))}">Baixar CSV</a> <button onclick="window.print()">Imprimir</button></nav></div>'
     if not rows: return pagina('Abastecimentos',view+'<article>Nenhum abastecimento encontrado. Cadastre uma nota ou ajuste os filtros.</article>')
-    idx=[0,1,3,5,6,7,8,10,12]
+    idx=[0,1,3,5,6,7,8,14,10,12]
     view+='<div class="tabela"><table><thead><tr>'+''.join('<th>'+COLUNAS[i]+'</th>' for i in idx)+'<th>Detalhes</th></tr></thead><tbody>'
     for r in rows:
         valores=linha(r)
         view+='<tr>'+''.join('<td>'+esc(valores[i] or '—')+'</td>' for i in idx)+'<td><details><summary>Ver nota</summary>'+''.join(f'<p>{COLUNAS[i]}: {esc(valores[i] or "—")}</p>' for i in [2,4,9,11,13])+'</details></td></tr>'
-    return pagina('Abastecimentos',view+'</tbody></table></div><p class="rodape">Média por intervalo entre lançamentos de diesel. O primeiro registro da placa fica sem média. O resumo usa a distância total dividida pelos litros dos intervalos válidos.</p>')
+    return pagina('Abastecimentos',view+'</tbody></table></div><p class="rodape">A média usa a distância entre dois tanques completos e todo o diesel abastecido nesse intervalo. O período considera a data em que o tanque foi completado. O resumo usa a distância total dividida pelos litros dos intervalos válidos.</p>')
 class Handler(BaseHTTPRequestHandler):
     def enviar(self,body,tipo='text/html; charset=utf-8',status=200):
         data=body.encode()
