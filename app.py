@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import webbrowser
 from contextlib import contextmanager
 from datetime import date
@@ -264,6 +265,8 @@ for (const campo of document.querySelectorAll('input[data-placa]')) {
 </script>"""
 
 def pagina(titulo,body):
+    if PORT == 8012:
+        body = '<p><strong>Demonstração · dados fictícios</strong></p>' + body
     if 'data-placa' in body:
         body += MASCARA_PLACA
     return f'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{titulo} · FrotaGestor</title><link rel="stylesheet" href="/estilo.css"><header><div><a href="/"><b>FrotaGestor</b></a><nav class="menu"><a href="/">Abastecimentos</a><a href="/relatorios">Relatórios</a><a href="/cadastros">Cadastros</a></nav></div></header><main>{body}</main></html>'''
@@ -508,10 +511,36 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError,ValueError,InvalidOperation) as e:
             return self.enviar(tela_cadastros(tipo,f,str(e)) if cadastro else formulario(f,str(e),nota_id),status=422)
         self.send_response(303); self.send_header('Location',self.path if cadastro else '/'); self.end_headers()
+def carregar_demonstracao():
+    veiculos = [('DEM1A01','Scania R 500',320000), ('DEM2B02','Volvo FH 460',410000),
+                ('DEM3C03','Iveco Hi-Way',195000)]
+    # Data, distância e litros desde a parada anterior do veículo.
+    paradas = [('2026-10-28',0,300), ('2026-11-02',780,300), ('2026-11-06',350,90),
+               ('2026-11-09',500,245), ('2026-11-14',900,330), ('2026-11-20',760,310),
+               ('2026-11-26',860,320)]
+    for indice, (placa_demo, modelo, km) in enumerate(veiculos):
+        for i, (dia, distancia, litros) in enumerate(paradas):
+            km += distancia
+            volume = litros + 10*indice
+            preco_centavos = (615,628,649,633,612,604,632)[i] + 3*indice
+            arla = 14 + indice if i in (1,3,5) else 0
+            gravar(dict(data=dia, placa=placa_demo, modelo=modelo, km=str(km), diesel=str(volume),
+                        valor=fmt(Decimal(volume*preco_centavos)/100), arla=str(arla), valorarla=str(arla*3),
+                        motorista=f'Motorista Demo {indice+1}', posto=f'Posto Demo {1+i%2}',
+                        observacao='Lançamento fictício', parcial=(i==2), chave=f'demo-{placa_demo}-{dia}'))
+
 if __name__=='__main__':
+    demonstracao = '--demonstracao' in sys.argv
+    if demonstracao:
+        DB = ROOT / 'dados' / 'demonstracao.sqlite'
+        PORT = 8012
     iniciar()
+    if demonstracao:
+        carregar_demonstracao()
     with ThreadingHTTPServer(('127.0.0.1',PORT),Handler) as servidor:
         url=f'http://127.0.0.1:{PORT}'
+        if demonstracao:
+            url += '/relatorios?de=2026-11-01&ate=2026-11-30'
         print('FrotaGestor em '+url,flush=True)
         if os.environ.get('FROTA_SEM_NAVEGADOR')!='1': webbrowser.open(url)
         servidor.serve_forever()
