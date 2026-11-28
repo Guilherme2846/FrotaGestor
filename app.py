@@ -127,7 +127,8 @@ def gravar(f, nota_id=None):
                 valor=?,arla=?,valorarla=?,observacao=?,parcial=? WHERE id=?""", (*valores_nota, nota_id))
 
 
-def consultar(f):
+def consultar(f, por_placa=False):
+    ordem = "placa, data, km, id" if por_placa else "data DESC, km DESC, id DESC"
     where=[]; args=[]
     for key,col in [('placa','placa'),('modelo','modelo')]:
         if f.get(key):
@@ -149,7 +150,7 @@ def consultar(f):
           FROM leituras JOIN notas n USING(id) WHERE delta>0
         ) SELECT notas.*, CASE WHEN delta>0 THEN delta END AS distancia, litros_intervalo, media_anterior
           FROM notas LEFT JOIN leituras USING(id) LEFT JOIN anteriores USING(id) """
-        + (' WHERE '+' AND '.join(where) if where else '')+' ORDER BY data DESC,km DESC,id DESC',args).fetchall()
+        + (' WHERE '+' AND '.join(where) if where else '')+' ORDER BY '+ordem,args).fetchall()
 
 def opcoes(col):
     with banco() as con:
@@ -468,7 +469,7 @@ def painel_mensal(f, mes, papel=False):
     fim = date.fromisoformat(f.get('ate') or inicio.replace(day=ultimo).isoformat())
     inicio = date.fromisoformat(f.get('de') or inicio.isoformat())
     filtros.update(de=inicio.isoformat(), ate=fim.isoformat())
-    rows = consultar(filtros)
+    rows = consultar(filtros, por_placa=not filtros.get("placa"))
     indicador = f.get('indicador', 'consumo')
     if indicador not in INDICADORES:
         indicador = 'consumo'
@@ -525,7 +526,7 @@ def painel_mensal(f, mes, papel=False):
                     f'<td>{fmt(sum(r["diesel"] for r in notas)/1000,3)}</td>'
                     f'<td>{fmt(sum(r["arla"] for r in notas)/1000,3)}</td>'
                     f'<td>R$ {fmt(sum(r["valor"]+r["valorarla"] for r in notas)/100)}</td><td>{len(notas)}</td></tr>')
-    html.append(f'</tbody></table></div><p><a href="/csv?{esc(urlencode(filtros))}">Baixar notas do período (CSV)</a></p>')
+    html.append(f'</tbody></table></div><p><a href="/csv?origem=relatorio&amp;{esc(urlencode(filtros))}">Baixar notas do período (CSV)</a></p>')
     html.append('<h2>Abastecimentos um por um</h2><div class="tabela">'+tabela_lancamentos(rows)+'</div><p>'+NOTA_VARIACAO+'</p>')
     return pagina('Relatório de abastecimentos', ''.join(html))
 
@@ -560,7 +561,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path=='/novo': return self.enviar(formulario())
         if u.path=='/estilo.css': return self.enviar((ROOT/'estilo.css').read_text(encoding='utf8'),'text/css')
         if u.path not in ('/','/csv'): return self.send_error(404)
-        try: rows=consultar(f)
+        exportar_por_placa = u.path == "/csv" and parse_qs(u.query).get("origem") == ["relatorio"] and not f.get("placa")
+        try: rows=consultar(f, por_placa=exportar_por_placa)
         except ValueError: return self.enviar(pagina('Consulta','<p>Confira o período informado.</p><a href="/">Voltar</a>'),status=422)
         if u.path=='/': return self.enviar(relatorio(f,rows))
         out=io.StringIO(); writer=csv.writer(out,delimiter=';'); writer.writerow(COLUNAS)
