@@ -144,8 +144,11 @@ def consultar(f):
         ), leituras AS (
           SELECT id, km-LAG(km) OVER ordem AS delta, total-LAG(total) OVER ordem AS litros_intervalo
           FROM acumulados WHERE parcial=0 WINDOW ordem AS (PARTITION BY placa ORDER BY data,km,id)
-        ) SELECT notas.*, CASE WHEN delta>0 THEN delta END AS distancia, litros_intervalo
-          FROM notas LEFT JOIN leituras USING(id) """
+        ), anteriores AS (
+          SELECT id, LAG(delta*10.0/litros_intervalo) OVER (PARTITION BY n.placa ORDER BY n.data,n.km,id) AS media_anterior
+          FROM leituras JOIN notas n USING(id) WHERE delta>0
+        ) SELECT notas.*, CASE WHEN delta>0 THEN delta END AS distancia, litros_intervalo, media_anterior
+          FROM notas LEFT JOIN leituras USING(id) LEFT JOIN anteriores USING(id) """
         + (' WHERE '+' AND '.join(where) if where else '')+' ORDER BY data DESC,km DESC,id DESC',args).fetchall()
 
 def opcoes(col):
@@ -337,16 +340,21 @@ def preco_diesel(notas):
     litros = sum(r['diesel'] for r in notas)
     return sum(r['valor'] for r in notas)*10/litros if litros else None
 
-def grafico_periodo(rows, inicio, fim, indicador):
+def grafico_periodo(rows, inicio, fim, indicador, papel=False):
     titulo, unidade, casas = INDICADORES[indicador]
     mensal = (fim-inicio).days > 62
     grupos = {}
+    datas = {r['data'][:7] if mensal else r['data'] for r in rows}
+    faixa = ((fim-inicio).days//8 + 1) if papel and len(datas)>8 else 0
     for r in rows:
         chave = r['data'][:7] if mensal else r['data']
+        if faixa:
+            dias = (date.fromisoformat(r['data'])-inicio).days
+            chave = date.fromordinal(inicio.toordinal()+dias//faixa*faixa).isoformat()
         grupos.setdefault(chave, []).append(r)
     pontos = []
     for chave, notas in sorted(grupos.items()):
-        dia = date.fromisoformat(chave+'-01' if mensal else chave)
+        dia = date.fromisoformat(chave+'-01' if mensal and not faixa else chave)
         if indicador == 'consumo':
             valor = media_diesel(notas)
         elif indicador == 'preco':
@@ -358,7 +366,7 @@ def grafico_periodo(rows, inicio, fim, indicador):
     if not pontos:
         return f'<article><h2>{titulo}</h2><p>Sem dados suficientes para este indicador no período.</p></article>'
     def posicao(d):
-        return d.year*12+d.month if mensal else d.toordinal()
+        return d.year*12+d.month if mensal and not faixa else d.toordinal()
     primeiro, ultimo = posicao(inicio), posicao(fim)
     posicoes = []
     deslocamento = 0
@@ -372,7 +380,8 @@ def grafico_periodo(rows, inicio, fim, indicador):
         posicoes.append(x)
     largura_svg = 800 + int(deslocamento + 1)
     teto = max(v for _,v in pontos) or 1
-    partes = [f'<article><h2>{titulo} ({unidade})</h2><p>Valores por {"mês" if mensal else "dia"} com referência disponível.</p>',
+    escala = f'faixa de {faixa} dias (data inicial)' if faixa else ('mês' if mensal else 'dia')
+    partes = [f'<article><h2>{titulo} ({unidade})</h2><p>Valores por {escala} com referência disponível.</p>',
               f'<div style="overflow-x:auto"><svg viewBox="0 0 {largura_svg} 220" style="display:block;width:100%;min-width:{largura_svg}px;height:auto" role="img" aria-label="{titulo} por período">']
     for fracao in (0, 0.5, 1):
         y = 173 - fracao*143
@@ -383,16 +392,17 @@ def grafico_periodo(rows, inicio, fim, indicador):
     largura = min(32, 550/max(1,ultimo-primeiro+1))
     for (dia, valor), x in zip(pontos, posicoes):
         y = 173-143*valor/teto
-        data_txt = dia.strftime('%m/%Y' if mensal else '%d/%m/%Y')
+        data_txt = dia.strftime('%m/%Y' if mensal and not faixa else '%d/%m/%Y')
         descricao = f'<title>{data_txt} · {fmt(valor,casas)} {unidade}</title>'
         if indicador == 'gasto':
             marcas.append(f'<rect x="{x-largura/2:.2f}" y="{y:.2f}" width="{largura:.2f}" height="{173-y:.2f}" fill="#19786a">{descricao}</rect>')
         else:
             coordenadas.append(f'{x:.2f},{y:.2f}')
             marcas.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" fill="#075c50">{descricao}</circle>')
-        rotulo = dia.strftime('%m/%Y' if mensal else '%d/%m')
+        rotulo = dia.strftime('%m/%Y' if mensal and not faixa else '%d/%m')
         marcas.append(f'<path d="M {x:.2f} 174 v 6" stroke="#718680"/>'
                       f'<text x="{x:.2f}" y="199" text-anchor="middle" font-size="13" fill="#314c48">{rotulo}</text>')
+        marcas.append(f'<text x="{x:.2f}" y="{y-9:.2f}" text-anchor="middle" font-size="13" font-weight="bold" fill="#173e3b">{fmt(valor,casas)}</text>')
         tabela.append(f'<tr><td>{data_txt}</td><td>{fmt(valor,casas)}</td></tr>')
     if coordenadas:
         partes.append(f'<polyline points="{" ".join(coordenadas)}" fill="none" stroke="#218778" stroke-width="3"/>')
@@ -401,7 +411,54 @@ def grafico_periodo(rows, inicio, fim, indicador):
     partes.append(f'<details><summary>Ver valores do gráfico</summary><table><thead><tr><th>Data</th><th>{titulo} ({unidade})</th></tr></thead><tbody>')
     return ''.join(partes+tabela)+ '</tbody></table></details></article>'
 
-def painel_mensal(f, mes):
+def tabela_lancamentos(rows):
+    itens = ['<table><thead><tr><th>Data</th><th>Placa</th><th>Tanque</th><th>Diesel (L)</th><th>ARLA (L)</th><th>Total (R$)</th><th>km/L</th><th>Variação¹</th></tr></thead><tbody>']
+    for r in rows:
+        media = media_diesel([r])
+        anterior = r['media_anterior']
+        variacao = 100*(media/anterior-1) if media and anterior else None
+        diferenca = ('+' if variacao>0 else '')+fmt(variacao,1)+'%' if variacao is not None else '—'
+        tanque = ('Parcial' if r['parcial'] else 'Cheio') if r['diesel'] else 'Só ARLA'
+        placa = r['placa']
+        valores = (date.fromisoformat(r['data']).strftime('%d/%m/%y'), placa[:3]+'-'+placa[3:], tanque,
+                   fmt(r['diesel']/1000,3), fmt(r['arla']/1000,3), fmt((r['valor']+r['valorarla'])/100), fmt(media,3), diferenca)
+        itens.append('<tr>'+''.join(f'<td>{esc(x)}</td>' for x in valores)+'</tr>')
+    return ''.join(itens)+'</tbody></table>'
+
+NOTA_VARIACAO = '¹ Variação em relação à média anterior válida da mesma placa. O traço indica que faltou referência para calcular.'
+
+def documento_a4(rows, filtros, indicador, inicio, fim):
+    css = """
+    @page{size:A4 portrait;margin:12mm}*{box-sizing:border-box}
+    body{background:#eceeea;margin:0;color:#1b302f;font:10pt Arial,sans-serif}
+    main{width:186mm;margin:5mm auto;background:white;padding:8mm}
+    nav{text-align:center;padding:12px}button{padding:9px 16px;cursor:pointer}
+    header{border-top:3px solid #18564d;padding-top:8px}header small,footer{color:#47625e}
+    h1{font:bold 23pt Georgia,serif;margin:5px 0}h2{font-size:12pt;margin:10px 0 4px}
+    p{margin:4px 0}.numeros{padding:8px 0;border-block:1px solid #879d98;margin:9px 0;line-height:1.6}
+    article div{overflow:visible!important}svg{min-width:0!important;width:100%!important;height:42mm!important}
+    details{display:none}table{border-collapse:collapse;width:100%;font-size:8pt;font-variant-numeric:tabular-nums}
+    td,th{text-align:right;padding:3px 2px;border-bottom:1px solid #d2dcd8;white-space:nowrap}td:nth-child(-n+3),th:nth-child(-n+3){text-align:left}
+    th{color:#18564d}footer{margin-top:8px;font-size:8pt}.filtro{overflow-wrap:anywhere}
+    @media print{body{background:white}nav{display:none}main{width:auto;margin:0;padding:0;break-after:page}main:last-child{break-after:auto}}
+    """
+    paginas = [rows[i:i+20] for i in range(0,len(rows),20)] or [[]]
+    saida = [f'<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Relatório de abastecimentos</title><style>{css}</style><body><nav><button onclick="window.print()">Imprimir ou salvar PDF</button></nav>']
+    diesel = sum(r['valor'] for r in rows)
+    arla = sum(r['valorarla'] for r in rows)
+    filtro = ' · '.join(f'{k.capitalize()} {v}' for k,v in filtros.items() if k in ('placa','modelo')) or 'Toda a frota'
+    for num, notas in enumerate(paginas,1):
+        origem = 'FrotaGestor · Demonstração' if PORT==8012 else 'FrotaGestor'
+        saida.append(f'<main><header><small>{origem} · Folha {num} de {len(paginas)}</small><h1>Relatório de abastecimentos</h1><p class="filtro">{inicio:%d/%m/%Y} a {fim:%d/%m/%Y} · {esc(filtro)}</p></header>')
+        if num==1:
+            saida.append(f'<div class="numeros"><b>Gasto total R$ {fmt((diesel+arla)/100)}</b> · Diesel R$ {fmt(diesel/100)} · ARLA R$ {fmt(arla/100)}<br>Média {fmt(media_diesel(rows),3)} km/L · Diesel {fmt(preco_diesel(rows))} R$/L · {len(rows)} lançamentos</div>')
+            saida.append(grafico_periodo(rows,inicio,fim,indicador,papel=True))
+        saida.append('<h2>Abastecimentos do período</h2>')
+        saida.append(tabela_lancamentos(notas) if notas else '<p>Nenhum lançamento neste período.</p>')
+        saida.append(f'<footer>{NOTA_VARIACAO}</footer></main>')
+    return ''.join(saida)+'</body></html>'
+
+def painel_mensal(f, mes, papel=False):
     from calendar import monthrange
     if not re.fullmatch(r'[0-9]{4}-[0-9]{2}', mes):
         raise ValueError('Mês inválido')
@@ -415,7 +472,10 @@ def painel_mensal(f, mes):
     indicador = f.get('indicador', 'consumo')
     if indicador not in INDICADORES:
         indicador = 'consumo'
-    html = ['<div class="top"><h1>Relatório de abastecimentos</h1><nav><button onclick="window.print()">Imprimir</button></nav></div>',
+    if papel:
+        return documento_a4(rows, filtros, indicador, inicio, fim)
+    link_a4 = esc(urlencode(dict(filtros, indicador=indicador)))
+    html = [f'<div class="top"><h1>Relatório de abastecimentos</h1><nav><a class="botao" href="/relatorios/a4?{link_a4}" target="_blank" rel="noopener">Gerar relatório A4</a></nav></div>',
             f'<form class="filtros"><label>De<input type="date" name="de" value="{inicio}" required></label>'
             f'<label>Até<input type="date" name="ate" value="{fim}" required></label>']
     for k in ('placa', 'modelo'):
@@ -467,6 +527,7 @@ def painel_mensal(f, mes):
                     f'<td>{fmt(sum(r["arla"] for r in notas)/1000,3)}</td>'
                     f'<td>R$ {fmt(sum(r["valor"]+r["valorarla"] for r in notas)/100)}</td><td>{len(notas)}</td></tr>')
     html.append(f'</tbody></table></div><p><a href="/csv?{esc(urlencode(filtros))}">Baixar notas do período (CSV)</a></p>')
+    html.append('<h2>Abastecimentos um por um</h2><div class="tabela">'+tabela_lancamentos(rows)+'</div><p>'+NOTA_VARIACAO+'</p>')
     return pagina('Relatório de abastecimentos', ''.join(html))
 
 class Handler(BaseHTTPRequestHandler):
@@ -486,10 +547,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path=='/cadastros' or (u.path.startswith('/cadastros/') and tipo in TIPOS):
             return self.enviar(tela_cadastros(tipo if tipo in TIPOS else 'placa',{'id':parse_qs(u.query).get('id',[''])[0]}))
         f={k:v[-1] for k,v in parse_qs(u.query).items() if k in ('placa','modelo','de','ate')}
-        if u.path=='/relatorios':
+        if u.path in ('/relatorios','/relatorios/a4'):
             f['indicador'] = parse_qs(u.query).get('indicador', ['consumo'])[-1]
             mes = parse_qs(u.query).get('mes', [date.today().isoformat()[:7]])[-1]
-            try: return self.enviar(painel_mensal(f, mes))
+            try: return self.enviar(painel_mensal(f, mes, papel=u.path.endswith('/a4')))
             except ValueError: return self.enviar(pagina('Relatório de abastecimentos','<p>Confira as datas e a ordem do período. <a href="/relatorios">Abrir mês atual</a></p>'),status=422)
         editar = re.fullmatch(r'/editar/([1-9][0-9]{0,17})', u.path)
         if editar:
