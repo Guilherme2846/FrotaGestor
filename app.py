@@ -413,7 +413,7 @@ def grafico_periodo(rows, inicio, fim, indicador, papel=False):
     return ''.join(partes+tabela)+ '</tbody></table></details></article>'
 
 def tabela_lancamentos(rows):
-    itens = ['<table><thead><tr><th>Data</th><th>Placa</th><th>Tanque</th><th>Diesel (L)</th><th>ARLA (L)</th><th>Total (R$)</th><th>km/L</th><th>Variação¹</th></tr></thead><tbody>']
+    itens = ['<table><thead><tr><th>Data</th><th>Placa</th><th>Posto</th><th>Tanque</th><th>Diesel (L)</th><th>ARLA (L)</th><th>Total (R$)</th><th>km/L</th><th>Variação¹</th></tr></thead><tbody>']
     for r in rows:
         media = media_diesel([r])
         anterior = r['media_anterior']
@@ -421,7 +421,7 @@ def tabela_lancamentos(rows):
         diferenca = ('+' if variacao>0 else '')+fmt(variacao,1)+'%' if variacao is not None else '—'
         tanque = ('Parcial' if r['parcial'] else 'Cheio') if r['diesel'] else 'Só ARLA'
         placa = r['placa']
-        valores = (date.fromisoformat(r['data']).strftime('%d/%m/%y'), placa[:3]+'-'+placa[3:], tanque,
+        valores = (date.fromisoformat(r['data']).strftime('%d/%m/%y'), placa[:3]+'-'+placa[3:], r['posto'] or '—', tanque,
                    fmt(r['diesel']/1000,3), fmt(r['arla']/1000,3), fmt((r['valor']+r['valorarla'])/100), fmt(media,3), diferenca)
         itens.append('<tr>'+''.join(f'<td>{esc(x)}</td>' for x in valores)+'</tr>')
     return ''.join(itens)+'</tbody></table>'
@@ -439,7 +439,8 @@ def documento_a4(rows, filtros, indicador, inicio, fim):
     p{margin:4px 0}.numeros{padding:8px 0;border-block:1px solid #879d98;margin:9px 0;line-height:1.6}
     article div{overflow:visible!important}svg{min-width:0!important;width:100%!important;height:42mm!important}
     details{display:none}table{border-collapse:collapse;width:100%;font-size:8pt;font-variant-numeric:tabular-nums}
-    td,th{text-align:right;padding:3px 2px;border-bottom:1px solid #d2dcd8;white-space:nowrap}td:nth-child(-n+3),th:nth-child(-n+3){text-align:left}
+    td,th{text-align:right;padding:3px 2px;border-bottom:1px solid #d2dcd8;white-space:nowrap}td:nth-child(-n+4),th:nth-child(-n+4){text-align:left}
+    td:nth-child(3){max-width:36mm;white-space:normal;overflow-wrap:anywhere}
     th{color:#18564d}footer{margin-top:8px;font-size:8pt}.filtro{overflow-wrap:anywhere}
     @media print{body{background:white}nav{display:none}main{width:auto;margin:0;padding:0;break-after:page}main:last-child{break-after:auto}}
     """
