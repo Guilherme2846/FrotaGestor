@@ -144,10 +144,10 @@ TRACOES = ('4x2','4x4','6x2','6x4','6x6','8x2','8x4','8x6','8x8')
 def lista(col):
     if col == 'placa':
         with banco() as con:
-            veiculos = con.execute("""SELECT v.nome, COALESCE(m.nome,'') AS habitual
+            veiculos = con.execute("""SELECT v.nome, v.detalhe AS modelo, COALESCE(m.nome,'') AS habitual
                 FROM cadastros v LEFT JOIN cadastros m ON m.id=v.motorista_id AND m.tipo='motorista'
                 WHERE v.tipo='placa' ORDER BY v.chave""")
-            return ''.join(f'<option value="{esc(r["nome"][:3])}-{esc(r["nome"][3:])}" data-motorista="{esc(r["habitual"])}"></option>' for r in veiculos)
+            return ''.join(f'<option value="{esc(r["nome"][:3])}-{esc(r["nome"][3:])}" data-modelo="{esc(r["modelo"])}" data-motorista="{esc(r["habitual"])}"></option>' for r in veiculos)
     nomes = (r['nome'] for r in registros(col)) if col in TIPOS else opcoes(col)
     return ''.join(f'<option value="{esc(v)}"></option>' for v in nomes)
 
@@ -262,14 +262,14 @@ def formulario(f=None,erro=''):
     const formNota = document.querySelector('form.nota');
     const placaNota = formNota.elements.placa;
     const motoristaNota = formNota.elements.motorista;
-    const habituais = new Map(Array.from(placaNota.list.options, o => [o.value.replace('-', ''), o.dataset.motorista]));
+    const veiculos = new Map(Array.from(placaNota.list.options, o => [o.value.replace('-', ''), o.dataset]));
     const manual = formNota.elements.motorista_manual;
     motoristaNota.addEventListener('input', () => { manual.value = '1'; });
     placaNota.addEventListener('input', () => {
-        if (manual.value !== '1') {
-            const chave = placaNota.value.toUpperCase().replace(/[-\s]/g, '');
-            motoristaNota.value = habituais.get(chave) || '';
-        }
+        const chave = placaNota.value.toUpperCase().replace(/[-\s]/g, '');
+        const veiculo = veiculos.get(chave);
+        formNota.elements.modelo.value = veiculo?.modelo || '';
+        if (manual.value !== '1') motoristaNota.value = veiculo?.motorista || '';
     });
     </script>'''
     +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+f'</div><label class="marcar"><input type="checkbox" name="parcial" {"checked" if f.get("parcial") else ""}>Tanque de diesel parcial (não completei)</label><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+'</textarea></label><button>Salvar abastecimento</button></form>')
