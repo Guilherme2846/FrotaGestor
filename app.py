@@ -71,7 +71,18 @@ def placa(s):
         raise ValueError('Confira os sete caracteres da placa.')
     return p
 
-def gravar(f):
+def versao_nota(nota):
+    import hashlib
+    return hashlib.sha256(repr(tuple(nota)).encode()).hexdigest()
+
+def campos_nota(nota):
+    dados = dict(nota)
+    dados['versao'] = versao_nota(nota)
+    for campo, casas in [('km',2), ('diesel',3), ('valor',2), ('arla',3), ('valorarla',2)]:
+        dados[campo] = fmt(Decimal(nota[campo]).scaleb(-casas), casas)
+    return dados
+
+def gravar(f, nota_id=None):
     p=placa(f['placa'])
     d=date.fromisoformat(f['data']).isoformat()
     if not f['km'].strip(): raise ValueError('Informe o hodômetro.')
@@ -81,7 +92,13 @@ def gravar(f):
         raise ValueError('Informe litros e valor total para cada produto abastecido.')
     with banco() as con:
         con.execute('BEGIN IMMEDIATE')
-        if con.execute('SELECT 1 FROM notas WHERE chave=?',(f['chave'],)).fetchone():
+        if nota_id is not None:
+            nota = con.execute('SELECT * FROM notas WHERE id=?', (nota_id,)).fetchone()
+            if nota is None:
+                raise ValueError('Abastecimento não encontrado.')
+            if versao_nota(nota) != f.get('versao'):
+                raise ValueError('A nota mudou desde que foi aberta. Volte ao histórico e abra a edição novamente.')
+        elif con.execute('SELECT 1 FROM notas WHERE chave=?',(f['chave'],)).fetchone():
             return
         valores = {}
         modelo = f['modelo'].strip()
@@ -99,9 +116,15 @@ def gravar(f):
                 con.execute('INSERT INTO cadastros(tipo,nome,chave,detalhe) VALUES (?,?,?,?)',
                             (tipo,nome,nome.casefold(),modelo if tipo=='placa' else ''))
             valores[tipo] = nome
-        con.execute("""INSERT INTO notas(data,placa,modelo,motorista,posto,km,diesel,valor,arla,valorarla,observacao,chave,parcial)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chave) DO NOTHING""",
-        (d,p,modelo,valores['motorista'],valores['posto'],km,diesel,valor,arla,va,f['observacao'].strip(),f['chave'],int(bool(diesel and f.get('parcial')))))
+        valores_nota = (d,p,modelo,valores['motorista'],valores['posto'],km,diesel,valor,arla,va,
+                        f['observacao'].strip(),int(bool(diesel and f.get('parcial'))))
+        if nota_id is None:
+            con.execute("""INSERT INTO notas(data,placa,modelo,motorista,posto,km,diesel,valor,arla,valorarla,observacao,parcial,chave)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (*valores_nota, f['chave']))
+        else:
+            con.execute("""UPDATE notas SET data=?,placa=?,modelo=?,motorista=?,posto=?,km=?,diesel=?,
+                valor=?,arla=?,valorarla=?,observacao=?,parcial=? WHERE id=?""", (*valores_nota, nota_id))
+
 
 def consultar(f):
     where=[]; args=[]
@@ -244,15 +267,19 @@ def pagina(titulo,body):
     if 'data-placa' in body:
         body += MASCARA_PLACA
     return f'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{titulo} · FrotaGestor</title><link rel="stylesheet" href="/estilo.css"><header><div><a href="/"><b>FrotaGestor</b></a><nav class="menu"><a href="/">Abastecimentos</a><a href="/cadastros">Cadastros</a></nav></div></header><main>{body}</main></html>'''
-def formulario(f=None,erro=''):
+def formulario(f=None,erro='',nota_id=None):
+    titulo = 'Editar abastecimento' if nota_id is not None else 'Novo abastecimento'
+    acao = f'/editar/{nota_id}' if nota_id is not None else '/salvar'
+    botao = 'Salvar alterações' if nota_id is not None else 'Salvar abastecimento'
     f={} if f is None else f
     def campo(k,t,attr=''):
         entrada=f'<label>{t}<input name="{k}" value="{esc(f.get(k,date.today().isoformat() if k=="data" else ""))}" {attr}></label>'
         if k in TIPOS:
             return f'<div>{entrada}<label class="marcar"><input type="checkbox" name="salvar_{k}" {"checked" if f.get("salvar_"+k) else ""}>Salvar no cadastro de {TIPOS[k][0].lower()}</label></div>'
         return entrada
-    return pagina('Novo abastecimento',f'''<a href="/">← Voltar ao relatório</a><h1>Novo abastecimento</h1>
-    <form method="post" action="/salvar" class="nota"><input type="hidden" name="token" value="{TOKEN}"><input type="hidden" name="chave" value="{esc(f.get('chave',secrets.token_hex(16)))}">
+    return pagina(titulo,f'''<a href="/">← Voltar ao relatório</a><h1>{titulo}</h1>
+    <form method="post" action="{acao}" class="nota"><input type="hidden" name="token" value="{TOKEN}"><input type="hidden" name="chave" value="{esc(f.get('chave',secrets.token_hex(16)))}">
+    <input type="hidden" name="versao" value="{esc(f.get('versao',''))}">
     {('<p role="alert">'+esc(erro)+'</p>') if erro else ''}<h2>Veículo e nota</h2><div class="grade">'''
     +campo('data','Data','type=date required')+campo('placa','Placa','list=placas required data-placa placeholder="ABC-1234"')+campo('km','Hodômetro (km)','required inputmode=decimal')
     +campo('modelo','Modelo','list=modelos')+campo('motorista','Motorista','list=motoristas')+campo('posto','Posto','list=postos')+'</div>'
@@ -272,7 +299,7 @@ def formulario(f=None,erro=''):
         if (manual.value !== '1') motoristaNota.value = veiculo?.motorista || '';
     });
     </script>'''
-    +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+f'</div><label class="marcar"><input type="checkbox" name="parcial" {"checked" if f.get("parcial") else ""}>Tanque de diesel parcial (não completei)</label><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+'</textarea></label><button>Salvar abastecimento</button></form>')
+    +'<h2>Produtos da nota</h2><div class="grade produtos">'+''.join(campo(k,t,'inputmode=decimal') for k,t in [('diesel','Diesel (L)'),('valor','Total diesel (R$)'),('arla','ARLA (L)'),('valorarla','Total ARLA (R$)')])+f'</div><label class="marcar"><input type="checkbox" name="parcial" {"checked" if f.get("parcial") else ""}>Tanque de diesel parcial (não completei)</label><label>Observação<textarea name="observacao">'+esc(f.get('observacao',''))+f'</textarea></label><button>{botao}</button></form>')
 
 COLUNAS=['Data','Placa','Modelo','Motorista','Posto','Hodômetro (km)','Distância (km)','Diesel (L)','Diesel (R$)','Diesel (R$/L)','Média (km/L)','ARLA (L)','ARLA (R$)','Observação','Tanque de diesel']
 def linha(r):
@@ -294,7 +321,7 @@ def relatorio(f,rows):
     view+='<div class="tabela"><table><thead><tr>'+''.join('<th>'+COLUNAS[i]+'</th>' for i in idx)+'<th>Detalhes</th></tr></thead><tbody>'
     for r in rows:
         valores=linha(r)
-        view+='<tr>'+''.join('<td>'+esc(valores[i] or '—')+'</td>' for i in idx)+'<td><details><summary>Ver nota</summary>'+''.join(f'<p>{COLUNAS[i]}: {esc(valores[i] or "—")}</p>' for i in [2,4,9,11,13])+'</details></td></tr>'
+        view+='<tr>'+''.join('<td>'+esc(valores[i] or '—')+'</td>' for i in idx)+'<td><details><summary>Ver nota</summary>'+''.join(f'<p>{COLUNAS[i]}: {esc(valores[i] or "—")}</p>' for i in [2,4,9,11,13])+f'</details><a href="/editar/{r["id"]}">Editar</a></td></tr>'
     return pagina('Abastecimentos',view+'</tbody></table></div><p class="rodape">A média usa a distância entre dois tanques completos e todo o diesel abastecido nesse intervalo. O período considera a data em que o tanque foi completado. O resumo usa a distância total dividida pelos litros dos intervalos válidos.</p>')
 class Handler(BaseHTTPRequestHandler):
     def enviar(self,body,tipo='text/html; charset=utf-8',status=200):
@@ -313,6 +340,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path=='/cadastros' or (u.path.startswith('/cadastros/') and tipo in TIPOS):
             return self.enviar(tela_cadastros(tipo if tipo in TIPOS else 'placa',{'id':parse_qs(u.query).get('id',[''])[0]}))
         f={k:v[-1] for k,v in parse_qs(u.query).items() if k in ('placa','modelo','de','ate')}
+        editar = re.fullmatch(r'/editar/([1-9][0-9]{0,17})', u.path)
+        if editar:
+            with banco() as con:
+                nota = con.execute('SELECT * FROM notas WHERE id=?', (editar[1],)).fetchone()
+            if nota is None: return self.send_error(404)
+            return self.enviar(formulario(campos_nota(nota), nota_id=int(editar[1])))
         if u.path=='/novo': return self.enviar(formulario())
         if u.path=='/estilo.css': return self.enviar((ROOT/'estilo.css').read_text(encoding='utf8'),'text/css')
         if u.path not in ('/','/csv'): return self.send_error(404)
@@ -326,16 +359,18 @@ class Handler(BaseHTTPRequestHandler):
         if not self.permitido(): return
         tipo=self.path.removeprefix('/cadastros/')
         cadastro=self.path.startswith('/cadastros/') and tipo in TIPOS
-        if self.path!='/salvar' and not cadastro: return self.send_error(404)
+        editar = re.fullmatch(r'/editar/([1-9][0-9]{0,17})', self.path)
+        nota_id = int(editar[1]) if editar else None
+        if self.path!='/salvar' and not cadastro and not editar: return self.send_error(404)
         n=int(self.headers.get('Content-Length','0'))
         if not 0<n<=32000: return self.send_error(413)
         f={k:v[-1] for k,v in parse_qs(self.rfile.read(n).decode(),keep_blank_values=True).items()}
         if not secrets.compare_digest(f.get('token',''),TOKEN): return self.send_error(403)
         try:
             if cadastro: salvar_cadastro(tipo,f)
-            else: gravar(f)
+            else: gravar(f, nota_id)
         except (KeyError,ValueError,InvalidOperation) as e:
-            return self.enviar(tela_cadastros(tipo,f,str(e)) if cadastro else formulario(f,str(e)),status=422)
+            return self.enviar(tela_cadastros(tipo,f,str(e)) if cadastro else formulario(f,str(e),nota_id),status=422)
         self.send_response(303); self.send_header('Location',self.path if cadastro else '/'); self.end_headers()
 if __name__=='__main__':
     iniciar()
