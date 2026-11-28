@@ -360,18 +360,28 @@ def grafico_periodo(rows, inicio, fim, indicador):
     def posicao(d):
         return d.year*12+d.month if mensal else d.toordinal()
     primeiro, ultimo = posicao(inicio), posicao(fim)
+    posicoes = []
+    deslocamento = 0
+    for dia, _ in pontos:
+        x = 433 if primeiro == ultimo else 102 + 660*(posicao(dia)-primeiro)/(ultimo-primeiro)
+        x += deslocamento
+        if posicoes and x < posicoes[-1] + 56:
+            ajuste = posicoes[-1] + 56 - x
+            deslocamento += ajuste
+            x += ajuste
+        posicoes.append(x)
+    largura_svg = 800 + int(deslocamento + 1)
     teto = max(v for _,v in pontos) or 1
     partes = [f'<article><h2>{titulo} ({unidade})</h2><p>Valores por {"mês" if mensal else "dia"} com referência disponível.</p>',
-              f'<svg viewBox="0 0 800 220" style="width:100%;height:auto" role="img" aria-label="{titulo} por período">']
+              f'<div style="overflow-x:auto"><svg viewBox="0 0 {largura_svg} 220" style="display:block;width:100%;min-width:{largura_svg}px;height:auto" role="img" aria-label="{titulo} por período">']
     for fracao in (0, 0.5, 1):
         y = 173 - fracao*143
-        partes.append(f'<path d="M 96 {y} H 770" stroke="#d6dfdc"/><text x="88" y="{y+5}" text-anchor="end" fill="#314c48" font-size="13">{fmt(teto*fracao,casas)}</text>')
+        partes.append(f'<path d="M 96 {y} H {largura_svg-30}" stroke="#d6dfdc"/><text x="88" y="{y+5}" text-anchor="end" fill="#314c48" font-size="13">{fmt(teto*fracao,casas)}</text>')
     coordenadas = []
     marcas = []
     tabela = []
     largura = min(32, 550/max(1,ultimo-primeiro+1))
-    for dia, valor in pontos:
-        x = 433 if primeiro==ultimo else 102 + 660*(posicao(dia)-primeiro)/(ultimo-primeiro)
+    for (dia, valor), x in zip(pontos, posicoes):
         y = 173-143*valor/teto
         data_txt = dia.strftime('%m/%Y' if mensal else '%d/%m/%Y')
         descricao = f'<title>{data_txt} · {fmt(valor,casas)} {unidade}</title>'
@@ -380,12 +390,14 @@ def grafico_periodo(rows, inicio, fim, indicador):
         else:
             coordenadas.append(f'{x:.2f},{y:.2f}')
             marcas.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" fill="#075c50">{descricao}</circle>')
+        rotulo = dia.strftime('%m/%Y' if mensal else '%d/%m')
+        marcas.append(f'<path d="M {x:.2f} 174 v 6" stroke="#718680"/>'
+                      f'<text x="{x:.2f}" y="199" text-anchor="middle" font-size="13" fill="#314c48">{rotulo}</text>')
         tabela.append(f'<tr><td>{data_txt}</td><td>{fmt(valor,casas)}</td></tr>')
     if coordenadas:
         partes.append(f'<polyline points="{" ".join(coordenadas)}" fill="none" stroke="#218778" stroke-width="3"/>')
     partes.extend(marcas)
-    formato = '%m/%Y' if mensal else '%d/%m/%Y'
-    partes.append(f'<text x="96" y="204">{inicio.strftime(formato)}</text><text x="770" y="204" text-anchor="end">{fim.strftime(formato)}</text></svg>')
+    partes.append('</svg></div>')
     partes.append(f'<details><summary>Ver valores do gráfico</summary><table><thead><tr><th>Data</th><th>{titulo} ({unidade})</th></tr></thead><tbody>')
     return ''.join(partes+tabela)+ '</tbody></table></details></article>'
 
