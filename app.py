@@ -266,7 +266,7 @@ for (const campo of document.querySelectorAll('input[data-placa]')) {
 def pagina(titulo,body):
     if 'data-placa' in body:
         body += MASCARA_PLACA
-    return f'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{titulo} · FrotaGestor</title><link rel="stylesheet" href="/estilo.css"><header><div><a href="/"><b>FrotaGestor</b></a><nav class="menu"><a href="/">Abastecimentos</a><a href="/cadastros">Cadastros</a></nav></div></header><main>{body}</main></html>'''
+    return f'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{titulo} · FrotaGestor</title><link rel="stylesheet" href="/estilo.css"><header><div><a href="/"><b>FrotaGestor</b></a><nav class="menu"><a href="/">Abastecimentos</a><a href="/relatorios">Relatórios</a><a href="/cadastros">Cadastros</a></nav></div></header><main>{body}</main></html>'''
 def formulario(f=None,erro='',nota_id=None):
     titulo = 'Editar abastecimento' if nota_id is not None else 'Novo abastecimento'
     acao = f'/editar/{nota_id}' if nota_id is not None else '/salvar'
@@ -305,12 +305,15 @@ COLUNAS=['Data','Placa','Modelo','Motorista','Posto','Hodômetro (km)','Distânc
 def linha(r):
     km=r['distancia']
     return [date.fromisoformat(r['data']).strftime('%d/%m/%Y'),r['placa'],r['modelo'],r['motorista'],r['posto'],fmt(r['km']/100),fmt(km/100 if km else None),fmt(r['diesel']/1000,3),fmt(r['valor']/100),fmt(r['valor']*10/r['diesel'] if r['diesel'] else None,3),fmt(km*10/r['litros_intervalo'] if km else None,3),fmt(r['arla']/1000,3),fmt(r['valorarla']/100),r['observacao'],('Parcial' if r['parcial'] else 'Completo') if r['diesel'] else '-']
+def media_diesel(rows):
+    validos=[r for r in rows if r['distancia']]
+    litros=sum(r['litros_intervalo'] for r in validos)
+    return sum(r['distancia'] for r in validos)*10/litros if litros else None
+
 def relatorio(f,rows):
     def select(k,t):
         return '<label>'+t+'<select name="'+k+'"><option value="">Todos</option>'+''.join(f'<option {"selected" if f.get(k)==v else ""}>{esc(v)}</option>' for v in opcoes(k))+'</select></label>'
-    validos=[r for r in rows if r['distancia']]
-    litros=sum(r['litros_intervalo'] for r in validos)
-    media=sum(r['distancia'] for r in validos)*10/litros if litros else None
+    media = media_diesel(rows)
     itens=[('Gasto no período','R$ '+fmt(sum(r['valor']+r['valorarla'] for r in rows)/100)),('Diesel abastecido',fmt(sum(r['diesel'] for r in rows)/1000,3)+' L'),('Média de diesel',fmt(media,3)+' km/L' if media else 'Sem referência'),('ARLA abastecido',fmt(sum(r['arla'] for r in rows)/1000,3)+' L')]
     view='<div class="top"><h1>Abastecimentos</h1><a class="botao" href="/novo">+ Novo abastecimento</a></div><form class="filtros">'+select('placa','Placa')+select('modelo','Modelo')
     for k,t in [('de','De'),('ate','Até')]: view+=f'<label>{t}<input type="date" name="{k}" value="{esc(f.get(k,""))}"></label>'
@@ -323,6 +326,68 @@ def relatorio(f,rows):
         valores=linha(r)
         view+='<tr>'+''.join('<td>'+esc(valores[i] or '—')+'</td>' for i in idx)+'<td><details><summary>Ver nota</summary>'+''.join(f'<p>{COLUNAS[i]}: {esc(valores[i] or "—")}</p>' for i in [2,4,9,11,13])+f'</details><a href="/editar/{r["id"]}">Editar</a></td></tr>'
     return pagina('Abastecimentos',view+'</tbody></table></div><p class="rodape">A média usa a distância entre dois tanques completos e todo o diesel abastecido nesse intervalo. O período considera a data em que o tanque foi completado. O resumo usa a distância total dividida pelos litros dos intervalos válidos.</p>')
+def painel_mensal(f, mes):
+    from calendar import monthrange
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}', mes):
+        raise ValueError('Mês inválido')
+    inicio = date.fromisoformat(mes + '-01')
+    ultimo = monthrange(inicio.year, inicio.month)[1]
+    filtros = {k: f[k] for k in ('placa', 'modelo') if f.get(k)}
+    filtros.update(de=inicio.isoformat(), ate=inicio.replace(day=ultimo).isoformat())
+    rows = consultar(filtros)
+    html = [f'<div class="top"><h1>Relatório mensal</h1><nav><button onclick="window.print()">Imprimir</button></nav></div>'
+            f'<form class="filtros"><label>Mês<input type="month" name="mes" value="{mes}" required></label>']
+    for k in ('placa', 'modelo'):
+        html.append(f'<label>{k.capitalize()}<select name="{k}"><option value="">Todos</option>')
+        for v in opcoes(k):
+            selected = ' selected' if filtros.get(k) == v else ''
+            html.append(f'<option{selected}>{esc(v)}</option>')
+        html.append('</select></label>')
+    html.append('<button>Consultar</button></form>')
+    if not rows:
+        html.append('<article>Nenhum abastecimento neste mês para os filtros selecionados.</article>')
+        return pagina('Relatório mensal', ''.join(html))
+
+    diesel = sum(r['valor'] for r in rows)
+    arla = sum(r['valorarla'] for r in rows)
+    media = media_diesel(rows)
+    por_placa = {}
+    gastos = [0] * ((ultimo + 6) // 7)
+    for r in rows:
+        por_placa.setdefault(r['placa'], []).append(r)
+        gastos[(int(r['data'][-2:]) - 1) // 7] += r['valor'] + r['valorarla']
+    cards = [('Gasto total', 'R$ '+fmt((diesel+arla)/100)),
+             ('Diesel', 'R$ '+fmt(diesel/100)), ('ARLA', 'R$ '+fmt(arla/100)),
+             ('Média da frota filtrada', fmt(media,3)+' km/L' if media else 'Sem referência')]
+    html.append('<div class="cards">')
+    for titulo, valor in cards:
+        html.append(f'<section><small>{titulo}</small><strong>{valor}</strong></section>')
+    html.append('</div><article><h2>Gastos ao longo do mês</h2>')
+    for i, gasto in enumerate(gastos):
+        html.append(f'<p>Dias {7*i+1:02}–{min(7*i+7,ultimo):02} · R$ {fmt(gasto/100)}<br>'
+                    f'<meter aria-label="Gasto relativo ao maior período" style="width:100%;height:1rem" '
+                    f'min="0" max="{max(max(gastos),1)}" value="{gasto}"></meter></p>')
+    html.append('</article><h2>Consumo por placa</h2>'
+                '<p>A média considera os intervalos encerrados neste mês entre dois tanques completos, incluindo os litros dos parciais. Clique na placa para conferir as notas.</p>')
+    grupos = [(placa, notas, media_diesel(notas)) for placa, notas in por_placa.items()]
+    grupos.sort(key=lambda item: (-(item[2] or 0), item[0]))
+    maior = max((m or 0 for _, _, m in grupos), default=0)
+    html.append('<div class="tabela"><table><thead><tr><th>Placa</th><th>Modelo</th><th>Média (km/L)</th>'
+                '<th>Km com referência</th><th>Diesel (L)</th><th>ARLA (L)</th><th>Gasto total</th><th>Notas</th></tr></thead><tbody>')
+    for placa, notas, media in grupos:
+        link = esc(urlencode(dict(filtros, placa=placa)))
+        distancia = sum(r['distancia'] or 0 for r in notas)
+        consumo = (f'{fmt(media,3)} <meter aria-hidden="true" min="0" max="{maior}" value="{media}"></meter>'
+                   if media else 'Sem referência')
+        modelos = ', '.join(sorted({r['modelo'] for r in notas if r['modelo']}))
+        html.append(f'<tr><td><a href="/?{link}">{esc(placa[:3])}-{esc(placa[3:])}</a></td>'
+                    f'<td>{esc(modelos) or "–"}</td><td>{consumo}</td><td>{fmt(distancia/100) if distancia else "–"}</td>'
+                    f'<td>{fmt(sum(r["diesel"] for r in notas)/1000,3)}</td>'
+                    f'<td>{fmt(sum(r["arla"] for r in notas)/1000,3)}</td>'
+                    f'<td>R$ {fmt(sum(r["valor"]+r["valorarla"] for r in notas)/100)}</td><td>{len(notas)}</td></tr>')
+    html.append(f'</tbody></table></div><p><a href="/csv?{esc(urlencode(filtros))}">Baixar notas do período (CSV)</a></p>')
+    return pagina('Relatório mensal', ''.join(html))
+
 class Handler(BaseHTTPRequestHandler):
     def enviar(self,body,tipo='text/html; charset=utf-8',status=200):
         data=body.encode()
@@ -340,6 +405,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path=='/cadastros' or (u.path.startswith('/cadastros/') and tipo in TIPOS):
             return self.enviar(tela_cadastros(tipo if tipo in TIPOS else 'placa',{'id':parse_qs(u.query).get('id',[''])[0]}))
         f={k:v[-1] for k,v in parse_qs(u.query).items() if k in ('placa','modelo','de','ate')}
+        if u.path=='/relatorios':
+            mes = parse_qs(u.query).get('mes', [date.today().isoformat()[:7]])[-1]
+            try: return self.enviar(painel_mensal(f, mes))
+            except ValueError: return self.enviar(pagina('Relatório mensal','<p>Mês inválido. <a href="/relatorios">Abrir mês atual</a></p>'),status=422)
         editar = re.fullmatch(r'/editar/([1-9][0-9]{0,17})', u.path)
         if editar:
             with banco() as con:
