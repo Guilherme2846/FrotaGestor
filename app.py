@@ -321,7 +321,7 @@ def relatorio(f,rows):
         return '<label>'+t+'<select name="'+k+'"><option value="">Todos</option>'+''.join(f'<option {"selected" if f.get(k)==v else ""}>{esc(v)}</option>' for v in opcoes(k))+'</select></label>'
     media = media_diesel(rows)
     itens=[('Gasto no período','R$ '+fmt(sum(r['valor']+r['valorarla'] for r in rows)/100)),('Diesel abastecido',fmt(sum(r['diesel'] for r in rows)/1000,3)+' L'),('Média de diesel',fmt(media,3)+' km/L' if media else 'Sem referência'),('ARLA abastecido',fmt(sum(r['arla'] for r in rows)/1000,3)+' L')]
-    view='<div class="top"><h1>Abastecimentos</h1><a class="botao" href="/novo">+ Novo abastecimento</a></div><form class="filtros">'+select('placa','Placa')+select('modelo','Modelo')
+    view='<div class="top"><h1>Abastecimentos</h1><nav><a class="botao" href="/relatorios">Relatórios e impressão A4</a><a class="botao" href="/novo">+ Novo abastecimento</a></nav></div><form class="filtros">'+select('placa','Placa')+select('modelo','Modelo')
     for k,t in [('de','De'),('ate','Até')]: view+=f'<label>{t}<input type="date" name="{k}" value="{esc(f.get(k,""))}"></label>'
     view+='<button>Consultar</button><a href="/">Limpar</a></form><div class="cards">'+''.join(f'<section><small>{t}</small><strong>{v}</strong></section>' for t,v in itens)+'</div>'
     view+=f'<div class="top"><h2>Histórico <small>({len(rows)})</small></h2><nav><a href="/csv?{esc(urlencode(f))}">Baixar CSV</a> <button onclick="window.print()">Imprimir</button></nav></div>'
@@ -474,8 +474,7 @@ def painel_mensal(f, mes, papel=False):
         indicador = 'consumo'
     if papel:
         return documento_a4(rows, filtros, indicador, inicio, fim)
-    link_a4 = esc(urlencode(dict(filtros, indicador=indicador)))
-    html = [f'<div class="top"><h1>Relatório de abastecimentos</h1><nav><a class="botao" href="/relatorios/a4?{link_a4}" target="_blank" rel="noopener">Gerar relatório A4</a></nav></div>',
+    html = ['<div class="top"><h1>Relatório de abastecimentos</h1></div>',
             f'<form class="filtros"><label>De<input type="date" name="de" value="{inicio}" required></label>'
             f'<label>Até<input type="date" name="ate" value="{fim}" required></label>']
     for k in ('placa', 'modelo'):
@@ -488,7 +487,7 @@ def painel_mensal(f, mes, papel=False):
     for chave, (nome, unidade, _) in INDICADORES.items():
         selected = ' selected' if indicador==chave else ''
         html.append(f'<option value="{chave}"{selected}>{nome} ({unidade})</option>')
-    html.append('</select></label><button>Consultar</button><a href="/relatorios">Mês atual</a></form>')
+    html.append('</select></label><button>Consultar</button><button type="submit" formaction="/relatorios/a4">Gerar relatório A4</button><a href="/relatorios">Mês atual</a></form>')
     if not rows:
         html.append('<article>Nenhum abastecimento neste período para os filtros selecionados.</article>')
         return pagina('Relatório de abastecimentos', ''.join(html))
